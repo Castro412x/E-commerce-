@@ -10,54 +10,44 @@ function Cart() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState({ open: false, message: "" });
 
+  // Load cart from localStorage when component mounts
   useEffect(() => {
     if (!currentUser) {
       navigate("/login");
       return;
     }
-    fetchCart();
+    loadCartFromLocalStorage();
   }, [currentUser]);
 
-  const fetchCart = async () => {
+  const loadCartFromLocalStorage = () => {
     setLoading(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/cart`, {
-        headers: { Authorization: `Bearer ${currentUser}` },
-      });
-      const data = await response.json();
-      console.log("Raw cart API response:", data);
-
-      let items = [];
-      if (Array.isArray(data)) {
-        items = data;
-      } else if (data.items && Array.isArray(data.items)) {
-        items = data.items;
-      } else if (data.cart && Array.isArray(data.cart)) {
-        items = data.cart;
-      } else if (data.data && Array.isArray(data.data)) {
-        items = data.data;
+      const storedCart = localStorage.getItem(`cart_${currentUser}`);
+      if (storedCart) {
+        const parsedCart = JSON.parse(storedCart);
+        setCartItems(parsedCart);
+        console.log("Cart loaded from localStorage:", parsedCart);
       } else {
-        console.warn("Unexpected cart response format:", data);
-        items = [];
+        setCartItems([]);
       }
-
-      const normalizedItems = items.map(item => ({
-        ...item,
-        product: item.product || item.productId || null,
-        _id: item._id || item.id,
-      }));
-
-      setCartItems(normalizedItems);
     } catch (err) {
-      console.error("fetchCart error:", err);
+      console.error("Error loading cart:", err);
       setCartItems([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ Fixed: use product ID instead of cart item ID
-  const removeFromCart = async (item) => {
+  const saveCartToLocalStorage = (items) => {
+    try {
+      localStorage.setItem(`cart_${currentUser}`, JSON.stringify(items));
+      setCartItems(items);
+    } catch (err) {
+      console.error("Error saving cart:", err);
+    }
+  };
+
+  const removeFromCart = (item) => {
     const productId = item.product?._id || item.productId;
     if (!productId) {
       alert("Cannot remove item: missing product identifier");
@@ -67,23 +57,15 @@ function Cart() {
     const confirmed = window.confirm("Remove this item from your cart?");
     if (!confirmed) return;
 
-    try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/cart/${productId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${currentUser}` },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("Delete failed:", response.status, errorData);
-        alert(errorData.message || "Could not remove item. Please try again.");
-        return;
-      }
-      fetchCart(); // refresh cart
-    } catch (err) {
-      console.error(err);
-      alert("Network error.");
-    }
+    const updatedCart = cartItems.filter(
+      (cartItem) => (cartItem.product?._id || cartItem.productId) !== productId
+    );
+    
+    saveCartToLocalStorage(updatedCart);
+    
+    // Show success message
+    setModal({ open: true, message: "Item removed from cart! 🗑️" });
+    setTimeout(() => setModal({ open: false, message: "" }), 1500);
   };
 
   const placeOrder = async () => {
@@ -91,122 +73,231 @@ function Cart() {
       alert("Your cart is empty!");
       return;
     }
+
     const confirmed = window.confirm("Proceed to checkout?");
     if (!confirmed) return;
 
+    // Create order object
+    const order = {
+      id: Date.now().toString(),
+      userId: currentUser,
+      items: cartItems,
+      total: cartTotal,
+      shippingAddress: "Lagos, Nigeria",
+      orderDate: new Date().toISOString(),
+      status: "pending",
+      orderNumber: `ORD-${Math.random().toString(36).substr(2, 9).toUpperCase()}`
+    };
+
+    // Save order to localStorage
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/orders`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${currentUser}`,
-        },
-        body: JSON.stringify({ shippingAddress: "Lagos, Nigeria" }),
-      });
-      if (!response.ok) {
-        alert("Could not place order. Please try again.");
-        return;
-      }
-      const data = await response.json();
-      console.log("Order placed:", data);
-      setModal({ open: true, message: "Order placed successfully! 🎉" });
-      setTimeout(() => navigate("/orders"), 2000);
+      const existingOrders = localStorage.getItem(`orders_${currentUser}`);
+      let orders = existingOrders ? JSON.parse(existingOrders) : [];
+      orders.unshift(order); // Add new order at the beginning
+      localStorage.setItem(`orders_${currentUser}`, JSON.stringify(orders));
+
+      // Clear the cart
+      localStorage.removeItem(`cart_${currentUser}`);
+      setCartItems([]);
+
+      console.log("Order placed:", order);
+      setModal({ open: true, message: `Order placed successfully! 🎉\nOrder #${order.orderNumber}` });
+      
+      // Redirect to orders page after 2 seconds
+      setTimeout(() => {
+        setModal({ open: false, message: "" });
+        navigate("/orders");
+      }, 2000);
     } catch (err) {
-      console.error(err);
-      alert("Network error.");
+      console.error("Error placing order:", err);
+      alert("Failed to place order. Please try again.");
     }
   };
 
   const cartTotal = cartItems.reduce((sum, item) => {
-    const price = item.product?.price ?? 0;
-    const qty = item.quantity ?? 0;
+    const price = item.product?.price ?? item.price ?? 0;
+    const qty = item.quantity ?? 1;
     return sum + price * qty;
   }, 0);
+
+  const updateQuantity = (item, newQuantity) => {
+    if (newQuantity < 1) {
+      removeFromCart(item);
+      return;
+    }
+
+    const updatedCart = cartItems.map(cartItem => {
+      const cartProductId = cartItem.product?._id || cartItem.productId;
+      const itemProductId = item.product?._id || item.productId;
+      
+      if (cartProductId === itemProductId) {
+        return { ...cartItem, quantity: newQuantity };
+      }
+      return cartItem;
+    });
+    
+    saveCartToLocalStorage(updatedCart);
+  };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p className="text-gray-500 text-lg">Loading your cart...</p>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-500 mx-auto"></div>
+          <p className="text-gray-500 mt-4">Loading your cart...</p>
+        </div>
       </div>
     );
   }
 
-  const validCartItems = cartItems.filter(item => item.product && item.product.name);
+  const validCartItems = cartItems.filter(item => {
+    const hasProduct = item.product && item.product.name;
+    const hasProductId = item.productId && item.name;
+    return hasProduct || hasProductId;
+  });
 
   return (
-    <div className="bg-white min-h-screen">
-      <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6 lg:px-8">
-        <h2 className="text-2xl font-bold tracking-tight text-gray-900">
-          Your Cart
-        </h2>
-
-        {modal.open && (
-          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-2xl shadow-xl p-8 text-center max-w-sm mx-4">
-              <div className="text-4xl mb-3">✅</div>
-              <p className="text-lg font-semibold text-gray-800">{modal.message}</p>
-              <p className="text-sm text-gray-500 mt-1">Redirecting to your orders...</p>
-            </div>
+    <div className="bg-gray-50 min-h-screen">
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+          <div className="px-6 py-8 border-b border-gray-200 bg-gradient-to-r from-red-50 to-white">
+            <h2 className="text-3xl font-bold text-gray-900">
+              Your Cart
+            </h2>
+            <p className="text-gray-500 mt-1">
+              {validCartItems.length} {validCartItems.length === 1 ? 'item' : 'items'}
+            </p>
           </div>
-        )}
 
-        {validCartItems.length === 0 ? (
-          <div className="mt-12 text-center">
-            <p className="text-gray-500 text-lg">Your cart is empty.</p>
-            <button
-              onClick={() => navigate("/")}
-              className="mt-6 bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg font-semibold transition"
-            >
-              Continue Shopping
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="mt-8 space-y-6">
-              {validCartItems.map((item) => (
-                <div key={item._id} className="flex gap-6 items-center border-b pb-6">
-                  <div className="w-24 h-24 bg-gray-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                    <img
-                      src={item.product?.imageUrl || "/placeholder.png"}
-                      alt={item.product?.name}
-                      className="h-20 object-contain"
-                      onError={(e) => { e.target.src = "/placeholder.png"; }}
-                    />
-                  </div>
-                  <div className="flex-grow">
-                    <h3 className="font-semibold text-gray-800">{item.product?.name}</h3>
-                    <p className="text-sm text-gray-500 mt-1">
-                      ${(item.product?.price ?? 0).toFixed(2)} × {item.quantity}
-                    </p>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <p className="font-bold text-gray-900">
-                      ${((item.product?.price ?? 0) * (item.quantity ?? 0)).toFixed(2)}
-                    </p>
-                    <button
-                      onClick={() => removeFromCart(item)}  // ✅ pass whole item
-                      className="mt-2 text-sm text-red-500 border border-red-300 hover:bg-red-50 px-3 py-1 rounded-lg transition"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))}
+          {/* Success Modal */}
+          {modal.open && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fadeIn">
+              <div className="bg-white rounded-2xl shadow-2xl p-8 text-center max-w-sm mx-4 transform animate-scaleUp">
+                <div className="text-5xl mb-4">✅</div>
+                <p className="text-lg font-semibold text-gray-800 whitespace-pre-line">
+                  {modal.message}
+                </p>
+                <div className="mt-4 w-16 h-1 bg-green-500 rounded-full mx-auto animate-pulse"></div>
+              </div>
             </div>
-            <div className="mt-8 flex flex-col sm:flex-row items-center justify-between gap-4 border-t pt-6">
-              <p className="text-lg font-bold text-gray-900">
-                Total: <span className="text-red-500">${cartTotal.toFixed(2)}</span>
-              </p>
+          )}
+
+          {validCartItems.length === 0 ? (
+            <div className="px-6 py-12 text-center">
+              <div className="text-6xl mb-4">🛒</div>
+              <p className="text-gray-500 text-lg">Your cart is empty.</p>
+              <p className="text-gray-400 text-sm mt-2">Looks like you haven't added anything yet</p>
               <button
-                onClick={placeOrder}
-                className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 rounded-lg font-semibold transition shadow-md"
+                onClick={() => navigate("/")}
+                className="mt-6 bg-red-500 hover:bg-red-600 text-white px-8 py-3 rounded-xl font-semibold transition-all transform hover:scale-105 shadow-md"
               >
-                Checkout
+                Continue Shopping
               </button>
             </div>
-          </>
-        )}
+          ) : (
+            <>
+              <div className="divide-y divide-gray-200">
+                {validCartItems.map((item) => {
+                  const productName = item.product?.name || item.name;
+                  const productPrice = item.product?.price ?? item.price ?? 0;
+                  const productImage = item.product?.imageUrl || item.imageUrl || "/placeholder.png";
+                  const productId = item.product?._id || item.productId;
+                  const quantity = item.quantity ?? 1;
+                  
+                  return (
+                    <div key={productId} className="p-6 hover:bg-gray-50 transition-colors">
+                      <div className="flex flex-col sm:flex-row gap-6">
+                        <div className="w-28 h-28 bg-gray-100 rounded-xl flex items-center justify-center flex-shrink-0 mx-auto sm:mx-0">
+                          <img
+                            src={productImage}
+                            alt={productName}
+                            className="h-24 object-contain"
+                            onError={(e) => { e.target.src = "/placeholder.png"; }}
+                          />
+                        </div>
+                        
+                        <div className="flex-grow">
+                          <h3 className="font-semibold text-gray-800 text-lg">{productName}</h3>
+                          <p className="text-sm text-gray-500 mt-1">
+                            ${productPrice.toFixed(2)} per item
+                          </p>
+                          
+                          {/* Quantity controls */}
+                          <div className="flex items-center gap-3 mt-3">
+                            <button
+                              onClick={() => updateQuantity(item, quantity - 1)}
+                              className="w-8 h-8 rounded-full border border-gray-300 hover:bg-gray-100 flex items-center justify-center transition"
+                            >
+                              -
+                            </button>
+                            <span className="font-medium w-8 text-center">{quantity}</span>
+                            <button
+                              onClick={() => updateQuantity(item, quantity + 1)}
+                              className="w-8 h-8 rounded-full border border-gray-300 hover:bg-gray-100 flex items-center justify-center transition"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div className="text-right flex-shrink-0">
+                          <p className="font-bold text-gray-900 text-xl">
+                            ${(productPrice * quantity).toFixed(2)}
+                          </p>
+                          <button
+                            onClick={() => removeFromCart(item)}
+                            className="mt-2 text-sm text-red-500 hover:text-red-700 font-medium transition-colors"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              
+              <div className="bg-gray-50 px-6 py-6">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div>
+                    <p className="text-gray-600">Subtotal</p>
+                    <p className="text-3xl font-bold text-gray-900">
+                      ${cartTotal.toFixed(2)}
+                    </p>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Shipping calculated at checkout
+                    </p>
+                  </div>
+                  
+                  <button
+                    onClick={placeOrder}
+                    className="bg-green-600 hover:bg-green-700 text-white px-10 py-4 rounded-xl font-semibold transition-all transform hover:scale-105 shadow-lg w-full sm:w-auto"
+                  >
+                    Proceed to Checkout
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
+
+      <style jsx>{`
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes scaleUp {
+          from { transform: scale(0.9); opacity: 0; }
+          to { transform: scale(1); opacity: 1; }
+        }
+        .animate-fadeIn {
+          animation: fadeIn 0.2s ease-out;
+        }
+        .animate-scaleUp {
+          animation: scaleUp 0.2s ease-out;
+        }
+      `}</style>
     </div>
   );
 }
